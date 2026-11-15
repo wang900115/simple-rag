@@ -1,4 +1,19 @@
 services:
+  ollama:
+    image: ollama/ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
   db:
     image: pgvector/pgvector:pg17
     environment:
@@ -22,14 +37,15 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://rag:rag@db:5432/rag
       CHECKPOINTER: postgres
-      HF_HOME: /models
+      OLLAMA_BASE_URL: http://ollama:11434
     ports:
       - "8000:8000"
     volumes:
-      - hf-cache:/models
       - ./data:/app/data:ro
     depends_on:
       db:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
 
   ui:
@@ -44,4 +60,4 @@ services:
 
 volumes:
   pgdata:
-  hf-cache:
+  ollama:

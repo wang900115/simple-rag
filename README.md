@@ -1,6 +1,6 @@
 # simple-rag
 
-An internal knowledge-base Q&A system (PoC). Markdown and plain-text documents are imported into PostgreSQL + pgvector. Users ask questions in natural language; the system retrieves relevant passages and Claude writes an answer that cites its sources. It supports multi-turn conversations and automatically rewrites the query and retries when retrieval comes back irrelevant.
+An internal knowledge-base Q&A system (PoC). Markdown and plain-text documents are imported into PostgreSQL + pgvector. Users ask questions in natural language; a local Qwen model writes an answer grounded in relevant passages and cites its sources. It supports multi-turn conversations and automatically rewrites the query and retries when retrieval comes back irrelevant.
 
 ## Contents
 
@@ -18,10 +18,11 @@ An internal knowledge-base Q&A system (PoC). Markdown and plain-text documents a
 ## Features
 
 - **Document import**: upload `.md` / `.markdown` / `.txt`. Markdown is split by headings (h1–h3), then by length. Re-importing a file with the same name replaces its old content.
-- **RAG Q&A**: MMR retrieval of 5 chunks. Claude answers only from the documents and cites each point as `[Source: filename]`. When the documents have nothing relevant, it says so.
-- **Multilingual**: Claude answers in the language of the question. The bge-m3 embedding model is multilingual, so English and Chinese documents can be mixed, and chunking also splits on CJK punctuation.
+- **RAG Q&A**: MMR retrieval of 5 chunks. The local Qwen model answers only from the documents and cites each point as `[Source: filename]`. When the documents have nothing relevant, it says so.
+- **Multilingual**: Qwen answers in the language of the question. The bge-m3 embedding model supports more than 100 languages, so English and Chinese documents can be mixed, and chunking also splits on CJK punctuation.
 - **Multi-turn conversations**: conversations are identified by `session_id`. A follow-up such as "What about sick leave?" is first rewritten into a standalone query using the history, then retrieved.
-- **Self-correcting retrieval**: Claude grades whether the retrieved chunks are relevant. If not, the query is rewritten and retrieval runs again, up to 2 times.
+- **Self-correcting retrieval**: Qwen grades whether the retrieved chunks are relevant. If not, the query is rewritten and retrieval runs again, up to 2 times.
+- **Local models**: Qwen and bge-m3 run locally through Ollama; no paid LLM or embedding API is required.
 - **Streaming answers**: an NDJSON stream with processing steps, the answer token by token, and sources.
 - **Web UI**: a Streamlit interface for uploading and deleting documents and chatting.
 
@@ -32,10 +33,10 @@ An internal knowledge-base Q&A system (PoC). Markdown and plain-text documents a
 │ Streamlit UI │ ──────> │ FastAPI                                  │
 └──────────────┘         │                                          │
                          │  /ingest ─> ingest.py                    │
-                         │             chunk → bge-m3 embed ─┐      │
+                         │             chunk → Ollama/bge-m3 ─┐      │
                          │                                   ▼      │
                          │  /ask ────> graph.py (LangGraph) ─> PGVector ──┐
-                         │             └─> Claude (ChatAnthropic)   │     │
+                         │             └─> Ollama/Qwen3 (ChatOllama) │     │
                          └──────────────────────────────────────────┘     │
                                                                           ▼
                                           ┌─────────────────────────────────────┐
@@ -58,7 +59,7 @@ START → contextualize → retrieve → grade ─┬─ relevant, or out of ret
 |---|---|
 | `contextualize` | Rewrites a follow-up into a standalone query using the history (skipped on the first turn, no LLM call) |
 | `retrieve` | MMR retrieval from pgvector with the query |
-| `grade` | Claude decides, via structured output, whether the documents can answer the question |
+| `grade` | Qwen decides, via structured output, whether the documents can answer the question |
 | `rewrite` | Rewords the query, `retries + 1`, back to `retrieve` |
 | `generate` | Writes the answer from the history and retrieved context; only the plain-text answer is written back to history |
 
@@ -75,18 +76,18 @@ Versions are those actually installed on 2026-11-15 (see `uv.lock`).
 | Orchestration | LangGraph | 1.2.22 | RAG state graph, multi-turn memory |
 | Conversation memory | langgraph-checkpoint-postgres | 3.2.1 | Persists conversation state in PostgreSQL |
 | LLM framework | langchain-core | 1.8.0 | Base types: Document, Prompt, Message |
-| LLM | langchain-anthropic (Claude `claude-opus-5-5`) | 1.7.10 | Answering, query rewriting, relevance grading |
+| LLM runtime | Ollama | | Runs open-weight models locally |
+| LLM | langchain-ollama (Qwen3 `qwen3:4b`) | 1.1.0 | Answering, query rewriting, relevance grading |
 | Vector database | PostgreSQL 17 + pgvector (`pgvector/pgvector:pg17`) | | Stores document vectors |
 | Vector access | langchain-postgres (`PGVector`) | 0.0.19 | Writes, MMR retrieval |
-| Embeddings | `BAAI/bge-m3` via langchain-huggingface / sentence-transformers | 1.2.3 / 6.3.0 | Multilingual vectors (1024-dim), run locally on CPU |
-| Deep learning | PyTorch (CPU build) | 2.15.0+cpu | Embedding model inference |
+| Embeddings | Ollama `bge-m3` via langchain-ollama | | Multilingual vectors (1024-dim), run locally |
 | Chunking | langchain-text-splitters | 1.1.3 | Markdown heading split, recursive length split |
 | DB drivers | psycopg 3 / SQLAlchemy | 3.3.9 / 2.1.8 | |
 | API | FastAPI / Uvicorn | 0.163.0 / 0.54.0 | REST + NDJSON streaming |
 | UI | Streamlit | 1.67.0 | Chat interface |
 | Configuration | pydantic-settings | 2.16.3 | Reads `.env` |
 | Testing | pytest, FastAPI TestClient | 9.2.0 | Tests with a fake LLM, no API cost |
-| Deployment | Docker Compose | | Three services: db / api / ui |
+| Deployment | Docker Compose | | Four services: db / ollama / api / ui |
 
 ## Project structure
 
@@ -116,11 +117,13 @@ Suggested reading order: `config.py` → `embeddings.py` → `ingest.py` → `ve
 
 ## Quick start (Docker)
 
-Requires Docker and an Anthropic API key.
+Requires Docker. The local models are free to run; downloading them requires several GB of disk space. CPU inference works but can be slow.
 
 ```bash
-cp .env.example .env            # set ANTHROPIC_API_KEY
+cp .env.example .env
 docker compose up -d --build
+docker compose exec ollama ollama pull qwen3:4b
+docker compose exec ollama ollama pull bge-m3
 ```
 
 | Service | URL |
@@ -129,13 +132,15 @@ docker compose up -d --build
 | API docs (Swagger) | http://localhost:8000/docs |
 | PostgreSQL | `localhost:5432` (user, password and database are all `rag`) |
 
-On first start the api container downloads the bge-m3 model, which takes a while. The model is kept in the `hf-cache` volume, so rebuilding containers doesn't download it again.
+Ollama stores downloaded models in the persistent `ollama` volume, so rebuilding containers doesn't download them again. The Qwen3 4B model is about 2.5 GB and bge-m3 is about 1.2 GB. Both run locally; CPU-only inference may take time.
 
 Import the sample documents:
 
 ```bash
 docker compose exec api python -m app.ingest data/docs
 ```
+
+If you already imported documents with the previous embedding integration, re-import each original source so the stored vectors are refreshed. Ingestion replaces chunks for a matching source name.
 
 You can also upload files from the UI sidebar.
 
@@ -145,16 +150,18 @@ You can also upload files from the UI sidebar.
 
 ```bash
 uv sync                         # install dependencies from uv.lock (including dev: pytest, httpx)
-cp .env.example .env            # set ANTHROPIC_API_KEY
+cp .env.example .env
+ollama pull qwen3:4b
+ollama pull bge-m3
 docker compose up -d db         # start only the database
 ```
 
-Locally the default is `CHECKPOINTER=memory`: conversations are kept in memory and lost when the API restarts. The api service in Docker uses `postgres`.
+Locally, run Ollama on the host at `http://localhost:11434`; `.env` uses this URL by default. The api service in Docker connects to the `ollama` Compose service. Locally the default is `CHECKPOINTER=memory`: conversations are kept in memory and lost when the API restarts. The api service in Docker uses `postgres`.
 
 ### 2. Run locally
 
 ```bash
-uv run python -m app.ingest data/docs          # import documents
+uv run python -m app.ingest data/docs          # import documents (first pull both models in Ollama)
 uv run uvicorn app.main:app --reload           # API: http://localhost:8000
 uv run streamlit run ui/streamlit_app.py       # UI: http://localhost:8501 (in another terminal)
 ```
@@ -190,8 +197,6 @@ uv add <package>          # runtime dependency
 uv add --dev <package>    # dev dependency
 ```
 
-PyTorch is pinned to the CPU package index through `[tool.uv.sources]` in `pyproject.toml`, so the Docker image doesn't pull in CUDA.
-
 ## API
 
 | Method | Path | Description |
@@ -223,13 +228,11 @@ Every setting can be overridden with an environment variable or `.env` (the uppe
 
 | Variable | Default | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | Required |
 | `DATABASE_URL` | `postgresql+psycopg://rag:rag@localhost:5432/rag` | Overridden by compose inside Docker |
 | `COLLECTION_NAME` | `simple_rag` | PGVector collection name |
-| `EMBEDDING_MODEL` | `BAAI/bge-m3` | |
-| `EMBEDDING_DEVICE` | `cpu` | Set `cuda` if a GPU is available |
-| `LLM_MODEL` | `claude-opus-5-5` | |
-| `LLM_EFFORT` | `medium` | Effort for answer generation; rewriting and grading always use `low` |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Overridden by compose inside Docker |
+| `EMBEDDING_MODEL` | `bge-m3` | Ollama embedding model |
+| `LLM_MODEL` | `qwen3:4b` | Ollama chat model |
 | `LLM_MAX_TOKENS` | `16000` | |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `800` / `100` | In characters |
 | `RETRIEVER_K` / `RETRIEVER_FETCH_K` | `5` / `20` | MMR returns k chunks chosen from fetch_k candidates |
@@ -237,23 +240,17 @@ Every setting can be overridden with an environment variable or `.env` (the uppe
 | `MAX_REWRITES` | `2` | Maximum query rewrites when retrieval is irrelevant |
 | `HISTORY_TURNS` | `6` | Prior Q&A turns sent to the model |
 
-### Claude notes
-
-- **Don't set `temperature`**: Claude Opus 5.5 rejects sampling parameters with a 400 error.
-- **Use `with_structured_output(..., method="json_schema")` for structured output**: the default `function_calling` relies on forced tool use, which Opus 5.5 doesn't support.
-- **Effort is passed as `output_config={"effort": ...}`** and can be combined with structured output's `output_config.format`.
-
 ## Known limitations
 
 **Not yet verified**
-- End-to-end Docker Compose startup, real pgvector reads and writes, real Postgres checkpointer writes, and the quality of real Claude answers.
+- End-to-end Docker Compose startup, real pgvector reads and writes, real Postgres checkpointer writes, and the quality/performance of local Qwen answers.
 - `list_sources` / `delete_source` in `vectorstore.py` query the `langchain_pg_embedding` / `langchain_pg_collection` tables directly. The table and column names are inferred from langchain-postgres conventions and haven't been checked against a real database.
 
 **By design**
 - No login or access control: everyone can see and delete every document.
 - Only UTF-8 Markdown and plain text are supported.
 - The fixed fallback messages (no documents found, refusal) are in English, since they are returned without calling the model and can't follow the question's language.
-- Each question makes 2 to 7 Claude calls (grading, rewriting, generation), so latency and cost are higher than a single call.
+- Each question makes 2 to 7 local-model calls (grading, rewriting, generation), so CPU inference can be slow.
 - `AsyncPostgresSaver.from_conn_string` uses a single connection and isn't suited to high concurrency.
 - On Windows, psycopg's async mode may not work with the default event loop, so local development defaults to the `memory` checkpointer (an inference, not tested).
 - Embedding many documents with bge-m3 on CPU is slow.

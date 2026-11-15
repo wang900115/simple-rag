@@ -47,7 +47,7 @@ def contextualize(state: RAGState) -> dict:
     query = question
     if history:
         msgs = rag.CONTEXTUALIZE_PROMPT.invoke({"history": history, "question": question})
-        query = rag.get_llm("low").invoke(msgs).text.strip() or question
+        query = rag.get_llm().invoke(msgs).text.strip() or question
     # Reset per-turn fields; they would otherwise carry over from the previous turn.
     return {"query": query, "retries": 0, "relevant": False, "docs": []}
 
@@ -71,7 +71,7 @@ def route_after_grade(state: RAGState) -> str:
 
 def rewrite(state: RAGState) -> dict:
     msgs = rag.REWRITE_PROMPT.invoke({"query": state["query"]})
-    new_query = rag.get_llm("low").invoke(msgs).text.strip() or state["query"]
+    new_query = rag.get_llm().invoke(msgs).text.strip() or state["query"]
     return {"query": new_query, "retries": state["retries"] + 1}
 
 
@@ -87,7 +87,7 @@ def generate(state: RAGState) -> dict:
         HumanMessage(content=f"<context>\n{rag.format_docs(docs)}\n</context>\n\nQuestion: {question}"),
     ]
     result = rag.get_llm().invoke(msgs)
-    if result.response_metadata.get("stop_reason") == "refusal":
+    if result.additional_kwargs.get("refusal"):
         return {"messages": [AIMessage(content=rag.REFUSAL_MESSAGE)]}
     # Store plain text only; the retrieved context is not kept in history.
     return {"messages": [AIMessage(content=result.text)]}

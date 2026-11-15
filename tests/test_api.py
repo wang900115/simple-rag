@@ -7,8 +7,10 @@ from langchain_core.language_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
+from app import embeddings as embeddings_mod
 from app import graph as graph_mod
 from app import main, rag
+from app.config import Settings
 
 DOCS = [
     Document(
@@ -28,7 +30,7 @@ class Fakes:
         self.llm = GenericFakeChatModel(messages=iter([]))
         monkeypatch.setattr(rag, "retrieve", self._retrieve)
         monkeypatch.setattr(rag, "grade_documents", lambda q, d: self.grades.pop(0))
-        monkeypatch.setattr(rag, "get_llm", lambda effort=None: self.llm)
+        monkeypatch.setattr(rag, "get_llm", lambda: self.llm)
 
     def _retrieve(self, query):
         self.queries.append(query)
@@ -136,3 +138,63 @@ def test_ingest_rejects_unsupported_file(client):
 
 def test_format_docs_includes_source_attribute():
     assert 'source="leave-policy.md"' in rag.format_docs(DOCS)
+
+
+def test_get_llm_uses_local_ollama_settings(monkeypatch):
+    kwargs = {}
+
+    def fake_chat_ollama(**values):
+        kwargs.update(values)
+        return GenericFakeChatModel(messages=iter([]))
+
+    monkeypatch.setattr(
+        rag,
+        "get_settings",
+        lambda: Settings(
+            ollama_base_url="http://ollama:11434",
+            llm_model="qwen3:4b",
+            llm_max_tokens=123,
+        ),
+    )
+    monkeypatch.setattr(rag, "ChatOllama", fake_chat_ollama)
+    rag.get_llm.cache_clear()
+    try:
+        rag.get_llm()
+    finally:
+        rag.get_llm.cache_clear()
+
+    assert kwargs == {
+        "model": "qwen3:4b",
+        "base_url": "http://ollama:11434",
+        "temperature": 0,
+        "num_predict": 123,
+        "reasoning": False,
+    }
+
+
+def test_get_embeddings_uses_local_ollama_settings(monkeypatch):
+    kwargs = {}
+
+    def fake_ollama_embeddings(**values):
+        kwargs.update(values)
+        return object()
+
+    monkeypatch.setattr(
+        embeddings_mod,
+        "get_settings",
+        lambda: Settings(
+            ollama_base_url="http://ollama:11434",
+            embedding_model="bge-m3",
+        ),
+    )
+    monkeypatch.setattr(embeddings_mod, "OllamaEmbeddings", fake_ollama_embeddings)
+    embeddings_mod.get_embeddings.cache_clear()
+    try:
+        embeddings_mod.get_embeddings()
+    finally:
+        embeddings_mod.get_embeddings.cache_clear()
+
+    assert kwargs == {
+        "model": "bge-m3",
+        "base_url": "http://ollama:11434",
+    }

@@ -2,10 +2,10 @@
 
 from functools import lru_cache
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
@@ -69,15 +69,15 @@ class Grade(BaseModel):
 
 
 @lru_cache
-def get_llm(effort: str | None = None) -> BaseChatModel:
-    """Claude chat model. Helper steps (rewrite, grade) pass effort="low"."""
+def get_llm() -> BaseChatModel:
+    """Local Ollama chat model used for answering, rewriting, and grading."""
     s = get_settings()
-    # temperature is intentionally not set: Claude Opus 5.5 rejects sampling params.
-    return ChatAnthropic(
+    return ChatOllama(
         model=s.llm_model,
-        max_tokens=s.llm_max_tokens,
-        output_config={"effort": effort or s.llm_effort},
-        api_key=s.anthropic_api_key or None,
+        base_url=s.ollama_base_url,
+        temperature=0,
+        num_predict=s.llm_max_tokens,
+        reasoning=False,
     )
 
 
@@ -110,8 +110,6 @@ def retrieve(query: str) -> list[Document]:
 
 
 def grade_documents(query: str, docs: list[Document]) -> bool:
-    # method="json_schema" uses Claude's native structured output (output_config.format).
-    # The default "function_calling" relies on forced tool_choice, which Opus 5.5 rejects.
-    grader = get_llm("low").with_structured_output(Grade, method="json_schema")
+    grader = get_llm().with_structured_output(Grade, method="json_schema")
     result = grader.invoke(GRADE_PROMPT.invoke({"query": query, "context": format_docs(docs)}))
     return result.relevant

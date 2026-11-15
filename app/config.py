@@ -6,15 +6,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    anthropic_api_key: str = ""
     database_url: str = "postgresql+psycopg://rag:rag@localhost:5432/rag"
     collection_name: str = "simple_rag"
 
-    embedding_model: str = "BAAI/bge-m3"
-    embedding_device: str = "cpu"
+    ollama_base_url: str = "http://localhost:11434"
+    embedding_model: str = "bge-m3"
 
-    llm_model: str = "claude-opus-5-5"
-    llm_effort: str = "medium"
+    llm_model: str = "qwen3:4b"
     llm_max_tokens: int = 16000
 
     chunk_size: int = 800
